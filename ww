@@ -1,0 +1,2279 @@
+--[[
+Traceless Roblox UI Library
+LocalScript / loadstring style
+
+Use:
+local Library = loadstring(game:HttpGet("RAW_GITHUB_LINK_HERE"))()
+
+Main API key system:
+Library:SetApiKeys({
+	"PRIMARY_KEY",
+	"BACKUP_KEY_1",
+	"BACKUP_KEY_2",
+	"BACKUP_KEY_3"
+})
+
+It tries keys in order:
+1. Primary
+2. Backup 1
+3. Backup 2
+4. Backup 3
+...as many as you put in the table.
+
+Important:
+- Normal Roblox Studio LocalScripts do not have request().
+- This is for environments that provide request().
+- Do not publish your real API keys publicly.
+- GUI says Traceless, but internally uses Gemini API/model names so requests work.
+]]
+
+local Library = {}
+
+--// Services
+local Players = game:GetService("Players")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local HttpService = game:GetService("HttpService")
+local TextService = game:GetService("TextService")
+local Workspace = game:GetService("Workspace")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Lighting = game:GetService("Lighting")
+local StarterGui = game:GetService("StarterGui")
+local StarterPack = game:GetService("StarterPack")
+local StarterPlayer = game:GetService("StarterPlayer")
+local SoundService = game:GetService("SoundService")
+local Teams = game:GetService("Teams")
+
+local CoreGui
+pcall(function()
+	CoreGui = game:GetService("CoreGui")
+end)
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer and LocalPlayer:GetMouse()
+
+--// Library state
+Library.Version = "TracelessUILibrary v1.5.0"
+Library.DisplayName = "Traceless"
+Library.Windows = {}
+Library.Chats = {}
+Library.AutoDemo = true
+
+Library.DefaultApiKey = "PASTE_PRIMARY_API_KEY_HERE"
+Library.BackupApiKey = ""
+Library.ApiKeys = {}
+
+Library.AllowedModelUsers = {
+	UserIds = {},
+	Names = {}
+}
+
+Library.Theme = {
+	Background = Color3.fromRGB(8, 8, 10),
+	Window = Color3.fromRGB(12, 12, 15),
+	Header = Color3.fromRGB(18, 18, 22),
+	Panel = Color3.fromRGB(17, 17, 20),
+	Panel2 = Color3.fromRGB(24, 24, 28),
+	Panel3 = Color3.fromRGB(31, 31, 36),
+	CodeBackground = Color3.fromRGB(5, 5, 7),
+	CodePanel = Color3.fromRGB(11, 11, 14),
+
+	Stroke = Color3.fromRGB(65, 65, 72),
+	StrokeSoft = Color3.fromRGB(42, 42, 48),
+
+	Text = Color3.fromRGB(240, 240, 245),
+	Muted = Color3.fromRGB(155, 155, 165),
+
+	Button = Color3.fromRGB(42, 42, 48),
+	ButtonHover = Color3.fromRGB(57, 57, 65),
+
+	Accent = Color3.fromRGB(90, 90, 100),
+	AccentHover = Color3.fromRGB(115, 115, 128),
+
+	Error = Color3.fromRGB(105, 50, 52),
+	Success = Color3.fromRGB(50, 88, 62),
+	Warning = Color3.fromRGB(105, 86, 45)
+}
+
+local function getDisplayModelName(model)
+	local names = {
+		["gemini-2.5-flash"] = "Traceless Flash",
+		["gemini-2.5-flash-lite"] = "Traceless Flash Lite",
+		["gemini-2.0-flash"] = "Traceless 2.0",
+		["gemini-1.5-flash"] = "Traceless 1.5 Flash",
+		["gemini-1.5-pro"] = "Traceless Pro"
+	}
+
+	return names[tostring(model)] or "Traceless"
+end
+
+--========================================================
+-- Utility
+--========================================================
+
+local function tween(instance, info, props)
+	local tw = TweenService:Create(instance, info, props)
+	tw:Play()
+	return tw
+end
+
+local function make(className, props, children)
+	local obj = Instance.new(className)
+
+	for k, v in pairs(props or {}) do
+		obj[k] = v
+	end
+
+	for _, child in ipairs(children or {}) do
+		child.Parent = obj
+	end
+
+	return obj
+end
+
+local function corner(parent, radius)
+	return make("UICorner", {
+		CornerRadius = UDim.new(0, radius or 10),
+		Parent = parent
+	})
+end
+
+local function stroke(parent, color, thickness, transparency)
+	return make("UIStroke", {
+		Color = color or Library.Theme.Stroke,
+		Thickness = thickness or 1,
+		Transparency = transparency or 0.25,
+		Parent = parent
+	})
+end
+
+local function padding(parent, left, right, top, bottom)
+	return make("UIPadding", {
+		PaddingLeft = UDim.new(0, left or 0),
+		PaddingRight = UDim.new(0, right or 0),
+		PaddingTop = UDim.new(0, top or 0),
+		PaddingBottom = UDim.new(0, bottom or 0),
+		Parent = parent
+	})
+end
+
+local function trim(text)
+	text = tostring(text or "")
+	return text:match("^%s*(.-)%s*$")
+end
+
+local function encode(value)
+	return HttpService:UrlEncode(tostring(value))
+end
+
+local function safeClipboard(text)
+	text = tostring(text or "")
+
+	if type(setclipboard) == "function" then
+		setclipboard(text)
+		return true
+	end
+
+	if type(toclipboard) == "function" then
+		toclipboard(text)
+		return true
+	end
+
+	if type(set_clipboard) == "function" then
+		set_clipboard(text)
+		return true
+	end
+
+	return false
+end
+
+local function hover(button, normal, over)
+	button.MouseEnter:Connect(function()
+		tween(button, TweenInfo.new(0.12), {
+			BackgroundColor3 = over
+		})
+	end)
+
+	button.MouseLeave:Connect(function()
+		tween(button, TweenInfo.new(0.12), {
+			BackgroundColor3 = normal
+		})
+	end)
+end
+
+local function getTextHeight(text, textSize, font, width, minHeight, maxHeight)
+	local ok, size = pcall(function()
+		return TextService:GetTextSize(
+			tostring(text or ""),
+			textSize,
+			font,
+			Vector2.new(math.max(width or 100, 60), 100000)
+		)
+	end)
+
+	if not ok then
+		return minHeight or 40
+	end
+
+	local height = size.Y + 26
+
+	if minHeight then
+		height = math.max(height, minHeight)
+	end
+
+	if maxHeight then
+		height = math.min(height, maxHeight)
+	end
+
+	return height
+end
+
+local function copyArray(array)
+	local result = {}
+
+	for _, value in ipairs(array or {}) do
+		table.insert(result, value)
+	end
+
+	return result
+end
+
+local function normalizeApiKeys(keys)
+	local result = {}
+	local seen = {}
+
+	for _, key in ipairs(keys or {}) do
+		key = tostring(key or "")
+
+		if key ~= "" and key ~= "PASTE_PRIMARY_API_KEY_HERE" and not seen[key] then
+			seen[key] = true
+			table.insert(result, key)
+		end
+	end
+
+	return result
+end
+
+local function isAllowedUser(allowed)
+	if not LocalPlayer then
+		return false
+	end
+
+	allowed = allowed or {}
+
+	for _, userId in ipairs(allowed.UserIds or {}) do
+		if tonumber(userId) == LocalPlayer.UserId then
+			return true
+		end
+	end
+
+	for _, name in ipairs(allowed.Names or {}) do
+		if tostring(name):lower() == LocalPlayer.Name:lower() then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function parseMarkdownCodeBlocks(text)
+	text = tostring(text or "")
+
+	local segments = {}
+	local index = 1
+
+	while true do
+		local startFence = text:find("```", index, true)
+
+		if not startFence then
+			local remaining = text:sub(index)
+
+			if remaining ~= "" then
+				table.insert(segments, {
+					Type = "text",
+					Text = remaining
+				})
+			end
+
+			break
+		end
+
+		if startFence > index then
+			table.insert(segments, {
+				Type = "text",
+				Text = text:sub(index, startFence - 1)
+			})
+		end
+
+		local afterFence = startFence + 3
+		local lineEnd = text:find("\n", afterFence, true)
+
+		local language = "lua"
+		local codeStart = afterFence
+
+		if lineEnd then
+			local maybeLanguage = trim(text:sub(afterFence, lineEnd - 1))
+
+			if maybeLanguage ~= "" then
+				language = maybeLanguage
+			end
+
+			codeStart = lineEnd + 1
+		end
+
+		local endFence = text:find("```", codeStart, true)
+
+		if not endFence then
+			table.insert(segments, {
+				Type = "text",
+				Text = text:sub(startFence)
+			})
+
+			break
+		end
+
+		local code = text:sub(codeStart, endFence - 1)
+		code = code:gsub("^%s*\n", "")
+		code = code:gsub("\n%s*$", "")
+
+		table.insert(segments, {
+			Type = "code",
+			Language = language,
+			Code = code
+		})
+
+		index = endFence + 3
+	end
+
+	return segments
+end
+
+local function getServiceName(instance)
+	local services = {
+		[Workspace] = "Workspace",
+		[ReplicatedStorage] = "ReplicatedStorage",
+		[Players] = "Players",
+		[Lighting] = "Lighting",
+		[StarterGui] = "StarterGui",
+		[StarterPack] = "StarterPack",
+		[StarterPlayer] = "StarterPlayer",
+		[SoundService] = "SoundService",
+		[Teams] = "Teams"
+	}
+
+	return services[instance]
+end
+
+local function makeSafeLuaPath(instance)
+	if not instance then
+		return "nil"
+	end
+
+	local chain = {}
+	local current = instance
+
+	while current and current ~= game do
+		table.insert(chain, 1, current)
+		current = current.Parent
+	end
+
+	local root = chain[1]
+
+	if not root then
+		return "nil"
+	end
+
+	local rootService = getServiceName(root)
+	local path
+
+	if rootService then
+		path = ('game:GetService("%s")'):format(rootService)
+	else
+		path = "game"
+	end
+
+	local startIndex = rootService and 2 or 1
+
+	for i = startIndex, #chain do
+		local safeName = chain[i].Name:gsub("\\", "\\\\"):gsub('"', '\\"')
+		path ..= (':WaitForChild("%s")'):format(safeName)
+	end
+
+	return path
+end
+
+local function getObjectInfo(instance)
+	if not instance then
+		return ""
+	end
+
+	local lines = {
+		"Selected object:",
+		"Name: " .. instance.Name,
+		"ClassName: " .. instance.ClassName,
+		"FullName: " .. instance:GetFullName(),
+		"LuaPath: " .. makeSafeLuaPath(instance)
+	}
+
+	if instance:IsA("BasePart") then
+		table.insert(lines, ("Position: %.2f, %.2f, %.2f"):format(instance.Position.X, instance.Position.Y, instance.Position.Z))
+		table.insert(lines, ("Size: %.2f, %.2f, %.2f"):format(instance.Size.X, instance.Size.Y, instance.Size.Z))
+		table.insert(lines, "Anchored: " .. tostring(instance.Anchored))
+		table.insert(lines, "CanCollide: " .. tostring(instance.CanCollide))
+		table.insert(lines, "Transparency: " .. tostring(instance.Transparency))
+	end
+
+	local children = instance:GetChildren()
+
+	if #children > 0 then
+		table.insert(lines, "Children:")
+
+		for i = 1, math.min(#children, 20) do
+			local child = children[i]
+			table.insert(lines, "- " .. child.Name .. " [" .. child.ClassName .. "]")
+		end
+	end
+
+	return table.concat(lines, "\n")
+end
+
+local function isCodingRequest(message)
+	local lower = string.lower(tostring(message or ""))
+
+	local keywords = {
+		"code",
+		"script",
+		"scripting",
+		"localscript",
+		"local script",
+		"lua",
+		"luau",
+		"roblox",
+		"debug",
+		"fix",
+		"error",
+		"full script",
+		"gui",
+		"ui",
+		"request",
+		"function",
+		"remote",
+		"tween",
+		"highlight"
+	}
+
+	for _, keyword in ipairs(keywords) do
+		if string.find(lower, keyword, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+local function isModelIdentityQuestion(message)
+	local lower = string.lower(tostring(message or ""))
+
+	local patterns = {
+		"what model",
+		"which model",
+		"what ai",
+		"which ai",
+		"who are you",
+		"what are you",
+		"are you gemini",
+		"are you chatgpt",
+		"language model",
+		"model are you",
+		"ai are you",
+		"what llm",
+		"which llm",
+		"what language model",
+		"what is your model",
+		"what's your model"
+	}
+
+	for _, pattern in ipairs(patterns) do
+		if string.find(lower, pattern, 1, true) then
+			return true
+		end
+	end
+
+	return false
+end
+
+--========================================================
+-- Global custom functions
+--========================================================
+
+function Library:SetApiKeys(keys)
+	self.ApiKeys = normalizeApiKeys(keys or {})
+
+	self.DefaultApiKey = self.ApiKeys[1] or self.DefaultApiKey or ""
+	self.BackupApiKey = self.ApiKeys[2] or ""
+
+	for _, chat in ipairs(self.Chats) do
+		if chat.SetApiKeys then
+			chat:SetApiKeys(self.ApiKeys)
+		end
+	end
+
+	return self
+end
+
+function Library:SetApiKey(key)
+	key = tostring(key or "")
+	self.DefaultApiKey = key
+
+	if #self.ApiKeys == 0 then
+		self.ApiKeys = normalizeApiKeys({ key })
+	else
+		self.ApiKeys[1] = key
+		self.ApiKeys = normalizeApiKeys(self.ApiKeys)
+	end
+
+	for _, chat in ipairs(self.Chats) do
+		if chat.SetApiKey then
+			chat:SetApiKey(key)
+		end
+	end
+
+	return self
+end
+
+function Library:SetBackupApiKey(key)
+	key = tostring(key or "")
+	self.BackupApiKey = key
+
+	if #self.ApiKeys == 0 then
+		self.ApiKeys = normalizeApiKeys({ self.DefaultApiKey, key })
+	else
+		self.ApiKeys[2] = key
+		self.ApiKeys = normalizeApiKeys(self.ApiKeys)
+	end
+
+	for _, chat in ipairs(self.Chats) do
+		if chat.SetBackupApiKey then
+			chat:SetBackupApiKey(key)
+		end
+	end
+
+	return self
+end
+
+function Library:SetAllowedModelUsers(config)
+	self.AllowedModelUsers = config or {
+		UserIds = {},
+		Names = {}
+	}
+
+	for _, chat in ipairs(self.Chats) do
+		if chat.SetAllowedModelUsers then
+			chat:SetAllowedModelUsers(self.AllowedModelUsers)
+		end
+	end
+
+	return self
+end
+
+--========================================================
+-- Parent / Notification
+--========================================================
+
+function Library:GetParent()
+	if gethui then
+		local ok, result = pcall(gethui)
+
+		if ok and result then
+			return result
+		end
+	end
+
+	if CoreGui then
+		return CoreGui
+	end
+
+	return LocalPlayer:WaitForChild("PlayerGui")
+end
+
+function Library:Notify(titleText, message, duration)
+	duration = duration or 3
+
+	local parent = self:GetParent()
+	local gui = parent:FindFirstChild("TracelessLibraryNotifications")
+
+	if not gui then
+		gui = make("ScreenGui", {
+			Name = "TracelessLibraryNotifications",
+			ResetOnSpawn = false,
+			IgnoreGuiInset = true,
+			Parent = parent
+		})
+	end
+
+	local frame = make("Frame", {
+		Size = UDim2.fromOffset(300, 72),
+		Position = UDim2.new(1, -318, 1, -90),
+		BackgroundColor3 = self.Theme.Panel,
+		BorderSizePixel = 0,
+		Parent = gui
+	})
+
+	corner(frame, 13)
+	stroke(frame, self.Theme.Stroke, 1, 0.25)
+
+	local titleLabel = make("TextLabel", {
+		Size = UDim2.new(1, -22, 0, 22),
+		Position = UDim2.fromOffset(11, 7),
+		BackgroundTransparency = 1,
+		Text = tostring(titleText or "Notice"),
+		TextColor3 = self.Theme.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.GothamBold,
+		TextSize = 13,
+		Parent = frame
+	})
+
+	local msgLabel = make("TextLabel", {
+		Size = UDim2.new(1, -22, 0, 34),
+		Position = UDim2.fromOffset(11, 30),
+		BackgroundTransparency = 1,
+		Text = tostring(message or ""),
+		TextColor3 = self.Theme.Muted,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		TextWrapped = true,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		Parent = frame
+	})
+
+	frame.BackgroundTransparency = 1
+	titleLabel.TextTransparency = 1
+	msgLabel.TextTransparency = 1
+
+	tween(frame, TweenInfo.new(0.16), {
+		BackgroundTransparency = 0
+	})
+
+	tween(titleLabel, TweenInfo.new(0.16), {
+		TextTransparency = 0
+	})
+
+	tween(msgLabel, TweenInfo.new(0.16), {
+		TextTransparency = 0
+	})
+
+	task.delay(duration, function()
+		if frame then
+			tween(frame, TweenInfo.new(0.18), {
+				BackgroundTransparency = 1
+			})
+
+			tween(titleLabel, TweenInfo.new(0.18), {
+				TextTransparency = 1
+			})
+
+			tween(msgLabel, TweenInfo.new(0.18), {
+				TextTransparency = 1
+			})
+
+			task.wait(0.2)
+			frame:Destroy()
+		end
+	end)
+end
+
+--========================================================
+-- Window
+--========================================================
+
+function Library:CreateWindow(config)
+	config = config or {}
+
+	self.AutoDemo = false
+
+	local window = {}
+	window.Library = self
+	window.Title = config.Title or "Traceless UI"
+	window.Size = config.Size or UDim2.fromOffset(480, 390)
+	window.Position = config.Position or UDim2.new(0.5, -240, 0.5, -195)
+	window.Tabs = {}
+	window.CurrentTab = nil
+
+	local parent = config.Parent or self:GetParent()
+
+	local old = parent:FindFirstChild(config.Name or "TracelessLibraryWindow")
+
+	if old and config.DestroyOld ~= false then
+		old:Destroy()
+	end
+
+	local gui = make("ScreenGui", {
+		Name = config.Name or "TracelessLibraryWindow",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		Parent = parent
+	})
+
+	local reopenButton = make("TextButton", {
+		Size = UDim2.fromOffset(132, 36),
+		Position = UDim2.new(1, -146, 0, 14),
+		BackgroundColor3 = self.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "Open Traceless",
+		TextColor3 = self.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = false,
+		Visible = false,
+		Parent = gui
+	})
+
+	corner(reopenButton, 10)
+	stroke(reopenButton, self.Theme.StrokeSoft, 1, 0.3)
+	hover(reopenButton, self.Theme.Button, self.Theme.ButtonHover)
+
+	local main = make("Frame", {
+		Size = window.Size,
+		Position = window.Position,
+		BackgroundColor3 = self.Theme.Window,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		Parent = gui
+	})
+
+	corner(main, 16)
+	stroke(main, self.Theme.Stroke, 1.25, 0.16)
+
+	make("UIGradient", {
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(20, 20, 24)),
+			ColorSequenceKeypoint.new(0.55, Color3.fromRGB(12, 12, 15)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(7, 7, 9))
+		}),
+		Rotation = 90,
+		Parent = main
+	})
+
+	local header = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 54),
+		BackgroundColor3 = self.Theme.Header,
+		BorderSizePixel = 0,
+		Parent = main
+	})
+
+	corner(header, 16)
+
+	make("TextLabel", {
+		Size = UDim2.new(1, -120, 0, 26),
+		Position = UDim2.fromOffset(14, 6),
+		BackgroundTransparency = 1,
+		Text = window.Title,
+		TextColor3 = self.Theme.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.GothamBold,
+		TextSize = 17,
+		Parent = header
+	})
+
+	make("TextLabel", {
+		Size = UDim2.new(1, -120, 0, 17),
+		Position = UDim2.fromOffset(15, 31),
+		BackgroundTransparency = 1,
+		Text = config.Subtitle or Library.Version,
+		TextColor3 = self.Theme.Muted,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.Gotham,
+		TextSize = 10,
+		Parent = header
+	})
+
+	local close = make("TextButton", {
+		Size = UDim2.fromOffset(32, 32),
+		Position = UDim2.new(1, -42, 0, 11),
+		BackgroundColor3 = self.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "×",
+		TextColor3 = self.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 21,
+		AutoButtonColor = false,
+		Parent = header
+	})
+
+	corner(close, 10)
+	hover(close, self.Theme.Button, self.Theme.ButtonHover)
+
+	local tabBar = make("Frame", {
+		Size = UDim2.new(0, 112, 1, -64),
+		Position = UDim2.fromOffset(8, 60),
+		BackgroundColor3 = self.Theme.Panel,
+		BorderSizePixel = 0,
+		Parent = main
+	})
+
+	corner(tabBar, 13)
+	stroke(tabBar, self.Theme.StrokeSoft, 1, 0.22)
+	padding(tabBar, 7, 7, 7, 7)
+
+	make("UIListLayout", {
+		Padding = UDim.new(0, 7),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = tabBar
+	})
+
+	local content = make("Frame", {
+		Size = UDim2.new(1, -132, 1, -64),
+		Position = UDim2.fromOffset(124, 60),
+		BackgroundTransparency = 1,
+		Parent = main
+	})
+
+	function window:Hide()
+		tween(main, TweenInfo.new(0.16, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = UDim2.fromOffset(0, 0),
+			BackgroundTransparency = 1
+		})
+
+		task.delay(0.17, function()
+			main.Visible = false
+			reopenButton.Visible = true
+		end)
+	end
+
+	function window:Show()
+		main.Visible = true
+		reopenButton.Visible = false
+		main.Size = UDim2.fromOffset(0, 0)
+		main.BackgroundTransparency = 1
+
+		tween(main, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = window.Size,
+			BackgroundTransparency = 0
+		})
+	end
+
+	function window:Toggle()
+		if main.Visible then
+			window:Hide()
+		else
+			window:Show()
+		end
+	end
+
+	close.MouseButton1Click:Connect(function()
+		window:Hide()
+	end)
+
+	reopenButton.MouseButton1Click:Connect(function()
+		window:Show()
+	end)
+
+	do
+		local dragging = false
+		local dragStart
+		local startPos
+
+		header.InputBegan:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging = true
+				dragStart = input.Position
+				startPos = main.Position
+			end
+		end)
+
+		header.InputEnded:Connect(function(input)
+			if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+				dragging = false
+			end
+		end)
+
+		UserInputService.InputChanged:Connect(function(input)
+			if not dragging then
+				return
+			end
+
+			if input.UserInputType ~= Enum.UserInputType.MouseMovement and input.UserInputType ~= Enum.UserInputType.Touch then
+				return
+			end
+
+			local delta = input.Position - dragStart
+
+			main.Position = UDim2.new(
+				startPos.X.Scale,
+				startPos.X.Offset + delta.X,
+				startPos.Y.Scale,
+				startPos.Y.Offset + delta.Y
+			)
+		end)
+	end
+
+	window.Gui = gui
+	window.Main = main
+	window.ReopenButton = reopenButton
+	window.Header = header
+	window.TabBar = tabBar
+	window.Content = content
+
+	function window:AddTab(tabName)
+		local tab = {}
+		tab.Window = window
+		tab.Name = tabName
+
+		local button = make("TextButton", {
+			Size = UDim2.new(1, 0, 0, 32),
+			BackgroundColor3 = Library.Theme.Panel2,
+			BorderSizePixel = 0,
+			Text = tostring(tabName or "Tab"),
+			TextColor3 = Library.Theme.Text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			AutoButtonColor = false,
+			Parent = tabBar
+		})
+
+		corner(button, 9)
+		hover(button, Library.Theme.Panel2, Library.Theme.Panel3)
+
+		local page = make("ScrollingFrame", {
+			Size = UDim2.fromScale(1, 1),
+			BackgroundColor3 = Library.Theme.Panel,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 4,
+			ScrollBarImageColor3 = Library.Theme.Accent,
+			CanvasSize = UDim2.fromOffset(0, 0),
+			AutomaticCanvasSize = Enum.AutomaticSize.Y,
+			Visible = false,
+			Parent = content
+		})
+
+		corner(page, 13)
+		stroke(page, Library.Theme.StrokeSoft, 1, 0.22)
+		padding(page, 9, 9, 9, 9)
+
+		make("UIListLayout", {
+			Padding = UDim.new(0, 8),
+			SortOrder = Enum.SortOrder.LayoutOrder,
+			Parent = page
+		})
+
+		tab.Button = button
+		tab.Page = page
+
+		function tab:Show()
+			for _, other in ipairs(window.Tabs) do
+				other.Page.Visible = false
+				other.Button.BackgroundColor3 = Library.Theme.Panel2
+			end
+
+			page.Visible = true
+			button.BackgroundColor3 = Library.Theme.Accent
+			window.CurrentTab = tab
+		end
+
+		button.MouseButton1Click:Connect(function()
+			tab:Show()
+		end)
+
+		function tab:AddLabel(text)
+			return make("TextLabel", {
+				Size = UDim2.new(1, 0, 0, 26),
+				BackgroundTransparency = 1,
+				Text = tostring(text or "Label"),
+				TextColor3 = Library.Theme.Text,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				Font = Enum.Font.GothamBold,
+				TextSize = 12,
+				Parent = page
+			})
+		end
+
+		function tab:AddButton(text, callback)
+			local btn = make("TextButton", {
+				Size = UDim2.new(1, 0, 0, 35),
+				BackgroundColor3 = Library.Theme.Button,
+				BorderSizePixel = 0,
+				Text = tostring(text or "Button"),
+				TextColor3 = Library.Theme.Text,
+				Font = Enum.Font.GothamBold,
+				TextSize = 12,
+				AutoButtonColor = false,
+				Parent = page
+			})
+
+			corner(btn, 9)
+			hover(btn, Library.Theme.Button, Library.Theme.ButtonHover)
+
+			btn.MouseButton1Click:Connect(function()
+				if callback then
+					task.spawn(callback)
+				end
+			end)
+
+			return btn
+		end
+
+		function tab:AddTextbox(config)
+			config = config or {}
+
+			local box = make("TextBox", {
+				Size = UDim2.new(1, 0, 0, config.Height or 38),
+				BackgroundColor3 = Library.Theme.Panel2,
+				BorderSizePixel = 0,
+				PlaceholderText = config.Placeholder or "Text...",
+				PlaceholderColor3 = Library.Theme.Muted,
+				Text = config.Default or "",
+				TextColor3 = Library.Theme.Text,
+				TextXAlignment = Enum.TextXAlignment.Left,
+				TextYAlignment = Enum.TextYAlignment.Top,
+				Font = Enum.Font.Gotham,
+				TextSize = 12,
+				MultiLine = config.MultiLine or false,
+				ClearTextOnFocus = false,
+				Parent = page
+			})
+
+			corner(box, 9)
+			stroke(box, Library.Theme.StrokeSoft, 1, 0.25)
+			padding(box, 9, 9, 7, 7)
+
+			return box
+		end
+
+		function tab:AddDropdown(config)
+			config = config or {}
+
+			local holder = make("Frame", {
+				Size = UDim2.new(1, 0, 0, 36),
+				BackgroundTransparency = 1,
+				Parent = page
+			})
+
+			local button = make("TextButton", {
+				Size = UDim2.fromScale(1, 1),
+				BackgroundColor3 = Library.Theme.Button,
+				BorderSizePixel = 0,
+				Text = tostring(config.Default or (config.Options and config.Options[1]) or "Select"),
+				TextColor3 = Library.Theme.Text,
+				Font = Enum.Font.GothamBold,
+				TextSize = 11,
+				AutoButtonColor = false,
+				Parent = holder
+			})
+
+			corner(button, 9)
+			hover(button, Library.Theme.Button, Library.Theme.ButtonHover)
+
+			local dropdown = {}
+			dropdown.Value = button.Text
+			dropdown.Options = config.Options or {}
+			dropdown.Button = button
+
+			local index = 1
+
+			button.MouseButton1Click:Connect(function()
+				if #dropdown.Options == 0 then
+					return
+				end
+
+				index += 1
+
+				if index > #dropdown.Options then
+					index = 1
+				end
+
+				dropdown.Value = dropdown.Options[index]
+				button.Text = dropdown.Value
+
+				if config.Callback then
+					task.spawn(config.Callback, dropdown.Value)
+				end
+			end)
+
+			function dropdown:Set(value)
+				dropdown.Value = tostring(value)
+				button.Text = dropdown.Value
+
+				if config.Callback then
+					task.spawn(config.Callback, dropdown.Value)
+				end
+			end
+
+			return dropdown
+		end
+
+		function tab:AddToggle(config)
+			config = config or {}
+
+			local state = config.Default or false
+
+			local btn = make("TextButton", {
+				Size = UDim2.new(1, 0, 0, 35),
+				BackgroundColor3 = state and Library.Theme.Accent or Library.Theme.Button,
+				BorderSizePixel = 0,
+				Text = tostring(config.Text or "Toggle") .. ": " .. tostring(state),
+				TextColor3 = Library.Theme.Text,
+				Font = Enum.Font.GothamBold,
+				TextSize = 12,
+				AutoButtonColor = false,
+				Parent = page
+			})
+
+			corner(btn, 9)
+
+			btn.MouseButton1Click:Connect(function()
+				state = not state
+				btn.Text = tostring(config.Text or "Toggle") .. ": " .. tostring(state)
+				btn.BackgroundColor3 = state and Library.Theme.Accent or Library.Theme.Button
+
+				if config.Callback then
+					task.spawn(config.Callback, state)
+				end
+			end)
+
+			return {
+				Button = btn,
+
+				Get = function()
+					return state
+				end,
+
+				Set = function(_, value)
+					state = value
+					btn.Text = tostring(config.Text or "Toggle") .. ": " .. tostring(state)
+					btn.BackgroundColor3 = state and Library.Theme.Accent or Library.Theme.Button
+				end
+			}
+		end
+
+		table.insert(window.Tabs, tab)
+
+		if not window.CurrentTab then
+			tab:Show()
+		end
+
+		return tab
+	end
+
+	table.insert(self.Windows, window)
+
+	main.Size = UDim2.fromOffset(0, 0)
+
+	task.defer(function()
+		tween(main, TweenInfo.new(0.18, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+			Size = window.Size
+		})
+	end)
+
+	return window
+end
+
+--========================================================
+-- Object Picker
+--========================================================
+
+function Library:StartObjectPicker(config)
+	config = config or {}
+
+	if not Mouse then
+		self:Notify("Picker unavailable", "Mouse is not available.", 3)
+		return
+	end
+
+	local parent = self:GetParent()
+
+	local gui = make("ScreenGui", {
+		Name = "TracelessObjectPicker",
+		ResetOnSpawn = false,
+		IgnoreGuiInset = true,
+		Parent = parent
+	})
+
+	local bar = make("Frame", {
+		Size = UDim2.fromOffset(360, 88),
+		Position = UDim2.new(0.5, -180, 0, 72),
+		BackgroundColor3 = self.Theme.Panel,
+		BorderSizePixel = 0,
+		Parent = gui
+	})
+
+	corner(bar, 13)
+	stroke(bar, self.Theme.Stroke, 1, 0.18)
+
+	local label = make("TextLabel", {
+		Size = UDim2.new(1, -24, 0, 32),
+		Position = UDim2.fromOffset(12, 7),
+		BackgroundTransparency = 1,
+		Text = "Tap/click an object to select it.",
+		TextColor3 = self.Theme.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = bar
+	})
+
+	local confirm = make("TextButton", {
+		Size = UDim2.fromOffset(104, 32),
+		Position = UDim2.fromOffset(12, 46),
+		BackgroundColor3 = self.Theme.Success,
+		BorderSizePixel = 0,
+		Text = "Confirm",
+		TextColor3 = self.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+		Parent = bar
+	})
+
+	corner(confirm, 9)
+
+	local cancel = make("TextButton", {
+		Size = UDim2.fromOffset(104, 32),
+		Position = UDim2.fromOffset(124, 46),
+		BackgroundColor3 = self.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "Cancel",
+		TextColor3 = self.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+		Parent = bar
+	})
+
+	corner(cancel, 9)
+
+	local selected = nil
+
+	local highlight = Instance.new("Highlight")
+	highlight.Name = "TracelessPickerHighlight"
+	highlight.FillColor = Color3.fromRGB(170, 170, 180)
+	highlight.OutlineColor = Color3.fromRGB(255, 255, 255)
+	highlight.FillTransparency = 0.72
+	highlight.OutlineTransparency = 0
+	highlight.Parent = gui
+
+	local connection
+	connection = Mouse.Button1Down:Connect(function()
+		local target = Mouse.Target
+
+		if not target then
+			return
+		end
+
+		selected = target
+		highlight.Adornee = selected
+		label.Text = "Selected: " .. selected:GetFullName()
+	end)
+
+	confirm.MouseButton1Click:Connect(function()
+		if selected and config.OnConfirm then
+			config.OnConfirm(selected)
+		end
+
+		if connection then
+			connection:Disconnect()
+		end
+
+		gui:Destroy()
+	end)
+
+	cancel.MouseButton1Click:Connect(function()
+		if connection then
+			connection:Disconnect()
+		end
+
+		gui:Destroy()
+	end)
+end
+
+--========================================================
+-- Chat Component
+--========================================================
+
+function Library:AddTracelessChat(tab, config)
+	config = config or {}
+
+	local chat = {}
+	chat.Config = config
+
+	chat.ApiKey = config.ApiKey or Library.DefaultApiKey or "PASTE_PRIMARY_API_KEY_HERE"
+	chat.BackupApiKey = config.BackupApiKey or Library.BackupApiKey or ""
+
+	chat.ApiKeys = normalizeApiKeys(config.ApiKeys or Library.ApiKeys or {})
+
+	if #chat.ApiKeys == 0 then
+		chat.ApiKeys = normalizeApiKeys({
+			chat.ApiKey,
+			chat.BackupApiKey
+		})
+	end
+
+	chat.BasicModel = config.BasicModel or "gemini-2.5-flash"
+	chat.Model = chat.BasicModel
+
+	chat.Models = config.Models or {
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-2.0-flash",
+		"gemini-1.5-flash",
+		"gemini-1.5-pro"
+	}
+
+	chat.AllowedModelUsers = config.AllowedModelUsers or Library.AllowedModelUsers or {
+		UserIds = {},
+		Names = {}
+	}
+
+	chat.MaxOutputTokens = config.MaxOutputTokens or 8192
+	chat.MaxRetries = config.MaxRetries or 2
+	chat.LastReply = ""
+	chat.SelectedContext = ""
+
+	chat.SystemPrompt = config.SystemPrompt or [[
+You are Traceless inside a Roblox UI.
+
+Identity rule:
+- If the user asks what model you are, what AI you are, who made you, what language model you are, or anything similar, say: "I am Traceless."
+- Do not say Gemini, Google, ChatGPT, OpenAI, or any internal model/API name in the user-facing answer.
+- Internally, the code may use Gemini API/model names, but your visible identity is always Traceless.
+
+If the user asks for Roblox code/scripting:
+- Strictly use Roblox Luau.
+- Prefer LocalScripts unless the user explicitly asks for something else.
+- Wrap code in markdown triple backticks using lua.
+- Give complete useful code when possible.
+]]
+
+	table.insert(Library.Chats, chat)
+
+	local page = tab.Page
+
+	local topRow = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 36),
+		BackgroundTransparency = 1,
+		Parent = page
+	})
+
+	local modelButton = make("TextButton", {
+		Size = UDim2.new(1, -92, 1, 0),
+		BackgroundColor3 = Library.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "Model: " .. getDisplayModelName(chat.Model),
+		TextColor3 = Library.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Parent = topRow
+	})
+
+	corner(modelButton, 9)
+	hover(modelButton, Library.Theme.Button, Library.Theme.ButtonHover)
+
+	local copyButton = make("TextButton", {
+		Size = UDim2.fromOffset(84, 36),
+		Position = UDim2.new(1, -84, 0, 0),
+		BackgroundColor3 = Library.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "Copy",
+		TextColor3 = Library.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+		Parent = topRow
+	})
+
+	corner(copyButton, 9)
+	hover(copyButton, Library.Theme.Button, Library.Theme.ButtonHover)
+
+	local output = make("ScrollingFrame", {
+		Size = UDim2.new(1, 0, 0, config.OutputHeight or 185),
+		BackgroundColor3 = Library.Theme.Background,
+		BorderSizePixel = 0,
+		ScrollBarThickness = 4,
+		ScrollBarImageColor3 = Library.Theme.Accent,
+		CanvasSize = UDim2.fromOffset(0, 0),
+		AutomaticCanvasSize = Enum.AutomaticSize.Y,
+		Parent = page
+	})
+
+	corner(output, 12)
+	stroke(output, Library.Theme.StrokeSoft, 1, 0.25)
+	padding(output, 9, 9, 9, 9)
+
+	make("UIListLayout", {
+		Padding = UDim.new(0, 8),
+		SortOrder = Enum.SortOrder.LayoutOrder,
+		Parent = output
+	})
+
+	local contextRow = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 34),
+		BackgroundTransparency = 1,
+		Parent = page
+	})
+
+	local pickButton = make("TextButton", {
+		Size = UDim2.new(0.5, -4, 1, 0),
+		Position = UDim2.fromOffset(0, 0),
+		BackgroundColor3 = Library.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "Select Item",
+		TextColor3 = Library.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+		Parent = contextRow
+	})
+
+	corner(pickButton, 9)
+	hover(pickButton, Library.Theme.Button, Library.Theme.ButtonHover)
+
+	local clearContext = make("TextButton", {
+		Size = UDim2.new(0.5, -4, 1, 0),
+		Position = UDim2.new(0.5, 4, 0, 0),
+		BackgroundColor3 = Library.Theme.Button,
+		BorderSizePixel = 0,
+		Text = "Clear Item",
+		TextColor3 = Library.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 11,
+		AutoButtonColor = false,
+		Parent = contextRow
+	})
+
+	corner(clearContext, 9)
+	hover(clearContext, Library.Theme.Button, Library.Theme.ButtonHover)
+
+	local inputRow = make("Frame", {
+		Size = UDim2.new(1, 0, 0, 58),
+		BackgroundTransparency = 1,
+		Parent = page
+	})
+
+	local input = make("TextBox", {
+		Size = UDim2.new(1, -82, 1, 0),
+		BackgroundColor3 = Library.Theme.Panel2,
+		BorderSizePixel = 0,
+		PlaceholderText = "Ask Traceless what to do...",
+		PlaceholderColor3 = Library.Theme.Muted,
+		Text = "",
+		TextColor3 = Library.Theme.Text,
+		TextXAlignment = Enum.TextXAlignment.Left,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		Font = Enum.Font.Gotham,
+		TextSize = 12,
+		MultiLine = true,
+		ClearTextOnFocus = false,
+		Parent = inputRow
+	})
+
+	corner(input, 9)
+	stroke(input, Library.Theme.StrokeSoft, 1, 0.25)
+	padding(input, 9, 9, 7, 7)
+
+	local send = make("TextButton", {
+		Size = UDim2.fromOffset(74, 58),
+		Position = UDim2.new(1, -74, 0, 0),
+		BackgroundColor3 = Library.Theme.Accent,
+		BorderSizePixel = 0,
+		Text = "Send",
+		TextColor3 = Library.Theme.Text,
+		Font = Enum.Font.GothamBold,
+		TextSize = 12,
+		AutoButtonColor = false,
+		Parent = inputRow
+	})
+
+	corner(send, 9)
+	hover(send, Library.Theme.Accent, Library.Theme.AccentHover)
+
+	local function scrollBottom()
+		task.defer(function()
+			output.CanvasPosition = Vector2.new(0, math.max(0, output.AbsoluteCanvasSize.Y))
+		end)
+	end
+
+	local function addBubble(senderName, text, kind, animate)
+		text = tostring(text or "")
+
+		local color = Library.Theme.Panel2
+
+		if kind == "user" then
+			color = Color3.fromRGB(44, 44, 50)
+		elseif kind == "error" then
+			color = Library.Theme.Error
+		elseif kind == "system" then
+			color = Color3.fromRGB(35, 35, 40)
+		end
+
+		local bubbleWidth = output.AbsoluteSize.X > 50 and (output.AbsoluteSize.X - 36) or 350
+		local full = senderName .. ": " .. text
+		local height = getTextHeight(full, 12, Enum.Font.Gotham, bubbleWidth, 36, 2000)
+
+		local holder = make("Frame", {
+			Size = UDim2.new(1, 0, 0, height),
+			BackgroundTransparency = 1,
+			ClipsDescendants = true,
+			Parent = output
+		})
+
+		local box = make("TextBox", {
+			Size = UDim2.new(kind == "user" and 0.88 or 0.96, 0, 0, height),
+			Position = kind == "user" and UDim2.new(0.12, 0, 0, 0) or UDim2.fromOffset(0, 0),
+			BackgroundColor3 = color,
+			BorderSizePixel = 0,
+			Text = animate and (senderName .. ": ") or full,
+			TextColor3 = Library.Theme.Text,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = true,
+			TextEditable = false,
+			MultiLine = true,
+			ClearTextOnFocus = false,
+			Font = Enum.Font.Gotham,
+			TextSize = 12,
+			Parent = holder
+		})
+
+		corner(box, 11)
+		stroke(box, Library.Theme.StrokeSoft, 1, 0.5)
+		padding(box, 9, 9, 7, 7)
+
+		holder.Position = UDim2.fromOffset(0, 8)
+
+		tween(holder, TweenInfo.new(0.14), {
+			Position = UDim2.fromOffset(0, 0)
+		})
+
+		scrollBottom()
+
+		if animate then
+			task.spawn(function()
+				local step = #text > 1000 and 20 or 7
+
+				for i = 1, #text, step do
+					box.Text = senderName .. ": " .. text:sub(1, i + step)
+					scrollBottom()
+					task.wait(0.006)
+				end
+
+				box.Text = full
+			end)
+		end
+
+		return holder
+	end
+
+	local function addCodeBlock(language, code)
+		language = trim(language)
+		code = tostring(code or "")
+
+		if language == "" then
+			language = "lua"
+		end
+
+		local lines = 1
+		local longest = 0
+
+		for line in (code .. "\n"):gmatch("(.-)\n") do
+			lines += 1
+			longest = math.max(longest, #line)
+		end
+
+		lines = math.max(1, lines - 1)
+
+		local contentHeight = math.max(125, lines * 18 + 30)
+		local viewHeight = math.clamp(contentHeight, 125, 300)
+		local holderHeight = viewHeight + 48
+		local canvasWidth = math.max(680, longest * 8 + 60)
+
+		local holder = make("Frame", {
+			Size = UDim2.new(1, 0, 0, holderHeight),
+			BackgroundTransparency = 1,
+			Parent = output
+		})
+
+		local frame = make("Frame", {
+			Size = UDim2.new(0.98, 0, 0, holderHeight),
+			BackgroundColor3 = Library.Theme.CodePanel,
+			BorderSizePixel = 0,
+			Parent = holder
+		})
+
+		corner(frame, 12)
+		stroke(frame, Library.Theme.Stroke, 1, 0.22)
+
+		local head = make("Frame", {
+			Size = UDim2.new(1, 0, 0, 36),
+			BackgroundColor3 = Library.Theme.Panel2,
+			BorderSizePixel = 0,
+			Parent = frame
+		})
+
+		corner(head, 12)
+
+		make("TextLabel", {
+			Size = UDim2.new(1, -112, 1, 0),
+			Position = UDim2.fromOffset(11, 0),
+			BackgroundTransparency = 1,
+			Text = string.upper(language),
+			TextColor3 = Library.Theme.Text,
+			TextXAlignment = Enum.TextXAlignment.Left,
+			Font = Enum.Font.GothamBold,
+			TextSize = 11,
+			Parent = head
+		})
+
+		local copy = make("TextButton", {
+			Size = UDim2.fromOffset(86, 26),
+			Position = UDim2.new(1, -94, 0, 5),
+			BackgroundColor3 = Library.Theme.Button,
+			BorderSizePixel = 0,
+			Text = "Copy Code",
+			TextColor3 = Library.Theme.Text,
+			Font = Enum.Font.GothamBold,
+			TextSize = 10,
+			AutoButtonColor = false,
+			Parent = head
+		})
+
+		corner(copy, 8)
+		hover(copy, Library.Theme.Button, Library.Theme.ButtonHover)
+
+		local scroll = make("ScrollingFrame", {
+			Size = UDim2.new(1, -16, 0, viewHeight),
+			Position = UDim2.fromOffset(8, 42),
+			BackgroundColor3 = Library.Theme.CodeBackground,
+			BorderSizePixel = 0,
+			ScrollBarThickness = 6,
+			ScrollBarImageColor3 = Library.Theme.Accent,
+			CanvasSize = UDim2.fromOffset(canvasWidth + 24, contentHeight + 18),
+			ScrollingDirection = Enum.ScrollingDirection.XY,
+			AutomaticCanvasSize = Enum.AutomaticSize.None,
+			Parent = frame
+		})
+
+		corner(scroll, 9)
+		stroke(scroll, Library.Theme.StrokeSoft, 1, 0.25)
+
+		local codeBox = make("TextBox", {
+			Size = UDim2.fromOffset(canvasWidth, contentHeight),
+			Position = UDim2.fromOffset(10, 8),
+			BackgroundTransparency = 1,
+			BorderSizePixel = 0,
+			Text = code,
+			TextColor3 = Color3.fromRGB(235, 235, 240),
+			TextXAlignment = Enum.TextXAlignment.Left,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			TextWrapped = false,
+			TextEditable = true,
+			MultiLine = true,
+			ClearTextOnFocus = false,
+			Font = Enum.Font.Code,
+			TextSize = 12,
+			Parent = scroll
+		})
+
+		copy.MouseButton1Click:Connect(function()
+			if safeClipboard(codeBox.Text) then
+				copy.Text = "Copied!"
+			else
+				copy.Text = "Select"
+				codeBox:CaptureFocus()
+			end
+
+			task.delay(1, function()
+				if copy then
+					copy.Text = "Copy Code"
+				end
+			end)
+		end)
+
+		scrollBottom()
+		return holder
+	end
+
+	local function addTracelessResponse(text)
+		text = tostring(text or "")
+		chat.LastReply = text
+
+		local segments = parseMarkdownCodeBlocks(text)
+		local hasCode = false
+
+		for _, seg in ipairs(segments) do
+			if seg.Type == "code" then
+				hasCode = true
+				break
+			end
+		end
+
+		if not hasCode then
+			addBubble("Traceless", text, "ai", true)
+			return
+		end
+
+		for _, seg in ipairs(segments) do
+			if seg.Type == "text" then
+				local clean = trim(seg.Text)
+
+				if clean ~= "" then
+					addBubble("Traceless", clean, "ai", false)
+				end
+			elseif seg.Type == "code" then
+				addCodeBlock(seg.Language, seg.Code)
+			end
+		end
+	end
+
+	local function extractApiText(decoded)
+		local candidates = decoded and decoded.candidates
+
+		if type(candidates) ~= "table" or not candidates[1] then
+			return nil
+		end
+
+		local content = candidates[1].content
+
+		if type(content) ~= "table" then
+			return nil
+		end
+
+		local parts = content.parts
+
+		if type(parts) ~= "table" then
+			return nil
+		end
+
+		local result = ""
+
+		for _, part in ipairs(parts) do
+			if type(part) == "table" and type(part.text) == "string" then
+				result ..= part.text
+			end
+		end
+
+		return result ~= "" and result or nil
+	end
+
+	local function isSuccess(response)
+		if type(response) ~= "table" then
+			return false
+		end
+
+		if response.Success == true or response.success == true then
+			return true
+		end
+
+		local status = response.StatusCode or response.Status or response.status
+
+		return type(status) == "number" and status >= 200 and status < 300
+	end
+
+	local function getBody(response)
+		if type(response) ~= "table" then
+			return nil
+		end
+
+		return response.Body or response.body or response.Response or response.response
+	end
+
+	local function getStatus(response)
+		if type(response) ~= "table" then
+			return "unknown"
+		end
+
+		return response.StatusCode or response.Status or response.status or "unknown"
+	end
+
+	local function buildPrompt(message)
+		local finalMessage = tostring(message or "")
+
+		if isModelIdentityQuestion(finalMessage) then
+			finalMessage =
+				"The user is asking about your identity/model. Reply exactly as Traceless. " ..
+				"Do not mention Gemini, Google, ChatGPT, OpenAI, or internal model/API names.\n\n" ..
+				"User message:\n" ..
+				finalMessage
+		end
+
+		if isCodingRequest(finalMessage) then
+			finalMessage =
+				"The user is asking for code/scripting. Follow these extra rules:\n" ..
+				"- Strictly use Roblox Luau.\n" ..
+				"- Prefer complete LocalScripts.\n" ..
+				"- Wrap code in ```lua code blocks.\n" ..
+				"- Do not switch to Python, JavaScript, HTML, ModuleScript, or ServerScript unless explicitly asked.\n\n" ..
+				"User message:\n" ..
+				finalMessage
+		end
+
+		if chat.SelectedContext ~= "" and not string.find(finalMessage, "[Selected Game Item]", 1, true) then
+			finalMessage ..= "\n\nRelevant selected game item context:\n" .. chat.SelectedContext
+		end
+
+		return finalMessage
+	end
+
+	local function doRequest(message, apiKeyToUse)
+		if not apiKeyToUse or apiKeyToUse == "" or apiKeyToUse == "PASTE_PRIMARY_API_KEY_HERE" then
+			return false, "NO_API_KEY", "API key is missing."
+		end
+
+		local url = "https://generativelanguage.googleapis.com/v1beta/models/"
+			.. encode(chat.Model)
+			.. ":generateContent?key="
+			.. encode(apiKeyToUse)
+
+		local payload = {
+			systemInstruction = {
+				parts = {
+					{ text = chat.SystemPrompt }
+				}
+			},
+
+			contents = {
+				{
+					role = "user",
+					parts = {
+						{ text = buildPrompt(message) }
+					}
+				}
+			},
+
+			generationConfig = {
+				temperature = config.Temperature or 0.8,
+				topP = config.TopP or 0.95,
+				maxOutputTokens = chat.MaxOutputTokens
+			}
+		}
+
+		local encodedBody = HttpService:JSONEncode(payload)
+
+		local ok, response = pcall(function()
+			return request({
+				Url = url,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json"
+				},
+				Body = encodedBody
+			})
+		end)
+
+		if not ok then
+			return false, "REQUEST_ERROR", tostring(response)
+		end
+
+		if not isSuccess(response) then
+			return false, "HTTP_" .. tostring(getStatus(response)), tostring(getBody(response))
+		end
+
+		local body = getBody(response)
+
+		if type(body) ~= "string" then
+			return false, "EMPTY_BODY", "No body"
+		end
+
+		local decodeOk, decoded = pcall(function()
+			return HttpService:JSONDecode(body)
+		end)
+
+		if not decodeOk then
+			return false, "DECODE_ERROR", tostring(decoded)
+		end
+
+		local text = extractApiText(decoded)
+
+		if not text then
+			return false, "NO_TEXT", body
+		end
+
+		return true, text, nil
+	end
+
+	local modelIndex = 1
+
+	modelButton.MouseButton1Click:Connect(function()
+		modelIndex += 1
+
+		if modelIndex > #chat.Models then
+			modelIndex = 1
+		end
+
+		local chosen = chat.Models[modelIndex]
+		local allowed = isAllowedUser(chat.AllowedModelUsers)
+
+		if chosen ~= chat.BasicModel and not allowed then
+			Library:Notify("Model locked", "You can only use the basic Traceless model.", 3)
+			chosen = chat.BasicModel
+			modelIndex = 1
+		elseif chosen ~= chat.BasicModel then
+			Library:Notify("Token warning", "Stronger models may use more tokens and cost more.", 3)
+		end
+
+		chat.Model = chosen
+		modelButton.Text = "Model: " .. getDisplayModelName(chat.Model)
+	end)
+
+	local busy = false
+
+	local function finishSend()
+		busy = false
+		send.Text = "Send"
+		send.BackgroundColor3 = Library.Theme.Accent
+	end
+
+	local function getApiList()
+		local list = {}
+		local keys = normalizeApiKeys(chat.ApiKeys)
+
+		if #keys == 0 then
+			keys = normalizeApiKeys({
+				chat.ApiKey,
+				chat.BackupApiKey
+			})
+		end
+
+		for index, key in ipairs(keys) do
+			table.insert(list, {
+				Name = index == 1 and "Primary" or ("Backup " .. tostring(index - 1)),
+				Key = key
+			})
+		end
+
+		return list
+	end
+
+	local function sendMessage()
+		if busy then
+			return
+		end
+
+		local message = trim(input.Text)
+
+		if message == "" then
+			addBubble("System", "Type something first.", "system", false)
+			return
+		end
+
+		if type(request) ~= "function" then
+			addBubble("System", "request() was not found in this environment.", "error", false)
+			return
+		end
+
+		input.Text = ""
+
+		addBubble("You", message, "user", false)
+
+		busy = true
+		send.Text = "..."
+		send.BackgroundColor3 = Library.Theme.Button
+
+		local thinking = addBubble("Traceless", "Thinking...", "system", false)
+
+		task.spawn(function()
+			local lastError = nil
+			local apiList = getApiList()
+
+			if #apiList == 0 then
+				if thinking then
+					thinking:Destroy()
+				end
+
+				addBubble("System", "No Traceless API keys are set.", "error", false)
+				finishSend()
+				return
+			end
+
+			for _, apiData in ipairs(apiList) do
+				for attempt = 1, chat.MaxRetries + 1 do
+					local ok, result, err = doRequest(message, apiData.Key)
+
+					if ok then
+						if thinking then
+							thinking:Destroy()
+						end
+
+						if apiData.Name ~= "Primary" then
+							addBubble("System", "Primary API failed, but " .. apiData.Name .. " worked.", "system", false)
+						end
+
+						addTracelessResponse(result)
+						finishSend()
+						return
+					end
+
+					lastError = apiData.Name .. " API failed: " .. tostring(result) .. " " .. tostring(err)
+					warn("[Traceless UI] " .. lastError)
+
+					if result == "HTTP_400" or result == "HTTP_401" or result == "HTTP_403" or result == "NO_API_KEY" then
+						break
+					end
+
+					task.wait(1)
+				end
+			end
+
+			if thinking then
+				thinking:Destroy()
+			end
+
+			addBubble("System", "The Traceless APIs are not working right now. All API keys failed.", "error", false)
+			warn("[Traceless UI] All APIs failed:", lastError)
+
+			finishSend()
+		end)
+	end
+
+	send.MouseButton1Click:Connect(sendMessage)
+
+	input.FocusLost:Connect(function(enterPressed)
+		if enterPressed and not UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+			sendMessage()
+		end
+	end)
+
+	copyButton.MouseButton1Click:Connect(function()
+		if chat.LastReply == "" then
+			Library:Notify("Nothing to copy", "No Traceless reply yet.", 2)
+			return
+		end
+
+		if safeClipboard(chat.LastReply) then
+			copyButton.Text = "Copied!"
+		else
+			copyButton.Text = "No Clip"
+		end
+
+		task.delay(1, function()
+			if copyButton then
+				copyButton.Text = "Copy"
+			end
+		end)
+	end)
+
+	clearContext.MouseButton1Click:Connect(function()
+		chat.SelectedContext = ""
+		Library:Notify("Context cleared", "Selected object context was cleared.", 2)
+	end)
+
+	pickButton.MouseButton1Click:Connect(function()
+		Library:StartObjectPicker({
+			OnConfirm = function(instance)
+				local info = getObjectInfo(instance)
+				chat.SelectedContext = info
+
+				local insertText =
+					"\n\n[Selected Game Item]\n" ..
+					"FullName: " .. instance:GetFullName() .. "\n" ..
+					"LuaPath: " .. makeSafeLuaPath(instance) .. "\n" ..
+					"ClassName: " .. instance.ClassName .. "\n\n" ..
+					"What should I do with this item?\n"
+
+				if trim(input.Text) == "" then
+					input.Text = insertText
+				else
+					input.Text ..= insertText
+				end
+
+				Library:Notify("Item selected", instance:GetFullName(), 3)
+				input:CaptureFocus()
+			end
+		})
+	end)
+
+	function chat:SetApiKeys(keys)
+		chat.ApiKeys = normalizeApiKeys(keys or {})
+		chat.ApiKey = chat.ApiKeys[1] or chat.ApiKey
+		chat.BackupApiKey = chat.ApiKeys[2] or chat.BackupApiKey
+		return chat
+	end
+
+	function chat:SetApiKey(key)
+		key = tostring(key or "")
+		chat.ApiKey = key
+
+		if #chat.ApiKeys == 0 then
+			chat.ApiKeys = normalizeApiKeys({ key })
+		else
+			chat.ApiKeys[1] = key
+			chat.ApiKeys = normalizeApiKeys(chat.ApiKeys)
+		end
+
+		return chat
+	end
+
+	function chat:SetBackupApiKey(key)
+		key = tostring(key or "")
+		chat.BackupApiKey = key
+
+		if #chat.ApiKeys == 0 then
+			chat.ApiKeys = normalizeApiKeys({ chat.ApiKey, key })
+		else
+			chat.ApiKeys[2] = key
+			chat.ApiKeys = normalizeApiKeys(chat.ApiKeys)
+		end
+
+		return chat
+	end
+
+	function chat:AddApiKey(key)
+		key = tostring(key or "")
+
+		if key ~= "" then
+			table.insert(chat.ApiKeys, key)
+			chat.ApiKeys = normalizeApiKeys(chat.ApiKeys)
+		end
+
+		return chat
+	end
+
+	function chat:GetApiKeys()
+		return copyArray(chat.ApiKeys)
+	end
+
+	function chat:SetAllowedModelUsers(config)
+		chat.AllowedModelUsers = config or {
+			UserIds = {},
+			Names = {}
+		}
+
+		return chat
+	end
+
+	function chat:SetModel(model)
+		chat.Model = tostring(model or chat.BasicModel)
+		modelButton.Text = "Model: " .. getDisplayModelName(chat.Model)
+		return chat
+	end
+
+	function chat:SetBasicModel(model)
+		chat.BasicModel = tostring(model or "gemini-2.5-flash")
+		return chat
+	end
+
+	function chat:SetModels(models)
+		chat.Models = models or chat.Models
+		return chat
+	end
+
+	function chat:AppendToInput(text)
+		input.Text ..= tostring(text or "")
+		return chat
+	end
+
+	function chat:GetInput()
+		return input.Text
+	end
+
+	function chat:SetInput(text)
+		input.Text = tostring(text or "")
+		return chat
+	end
+
+	function chat:AddMessage(senderName, text, kind)
+		return addBubble(senderName, text, kind or "system", false)
+	end
+
+	function chat:GetSelectedContext()
+		return chat.SelectedContext
+	end
+
+	function chat:ClearSelectedContext()
+		chat.SelectedContext = ""
+		return chat
+	end
+
+	addBubble("System", "Traceless chat loaded. Select Item inserts object context into your textbox.", "system", false)
+
+	return chat
+end
+
+-- Backward-compatible alias
+function Library:AddGeminiChat(tab, config)
+	return self:AddTracelessChat(tab, config)
+end
+
+--========================================================
+-- Demo
+--========================================================
+
+function Library:Demo()
+	local win = self:CreateWindow({
+		Title = "Traceless Assistant",
+		Subtitle = "demo window",
+		Name = "TracelessUILibraryDemo",
+		Size = UDim2.fromOffset(480, 390),
+		Position = UDim2.new(0.5, -240, 0.5, -195)
+	})
+
+	local chatTab = win:AddTab("Chat")
+	local toolsTab = win:AddTab("Tools")
+
+	self:AddTracelessChat(chatTab, {
+		ApiKeys = self.ApiKeys,
+
+		BasicModel = "gemini-2.5-flash",
+
+		Models = {
+			"gemini-2.5-flash",
+			"gemini-2.5-flash-lite",
+			"gemini-2.0-flash",
+			"gemini-1.5-flash",
+			"gemini-1.5-pro"
+		},
+
+		AllowedModelUsers = self.AllowedModelUsers,
+
+		OutputHeight = 185
+	})
+
+	toolsTab:AddLabel("Library Controls")
+
+	toolsTab:AddButton("Notify Test", function()
+		Library:Notify("Hello", "This is a test notification.", 3)
+	end)
+
+	toolsTab:AddButton("Select Item Test", function()
+		Library:StartObjectPicker({
+			OnConfirm = function(instance)
+				Library:Notify("Selected", instance:GetFullName(), 4)
+			end
+		})
+	end)
+
+	toolsTab:AddToggle({
+		Text = "Example Toggle",
+		Default = false,
+		Callback = function(value)
+			print("Toggle:", value)
+		end
+	})
+
+	toolsTab:AddDropdown({
+		Options = {
+			"Option 1",
+			"Option 2",
+			"Option 3"
+		},
+
+		Default = "Option 1",
+
+		Callback = function(value)
+			print("Dropdown:", value)
+		end
+	})
+end
+
+task.defer(function()
+	task.wait(0.15)
+
+	if Library.AutoDemo and #Library.Windows == 0 then
+		Library:Demo()
+	end
+end)
+
+return Library
